@@ -1,6 +1,7 @@
 import "./style.css";
 import maps from "./map_master.json";
 import quests from "./quests.json";
+import yearlyResetMonths from "./yearly_reset_months.json";
 
 type MapEntry = {
   map_id: string;
@@ -14,19 +15,58 @@ type Cycle = "normal" | "daily" | "weekly" | "monthly" | "quarterly" | "yearly" 
 
 type Quest = {
   id: string;
+  normalized_id?: string;
   title: string;
   raw?: string;
   text_plain?: string;
   maps?: string[];
   cycle?: Cycle;
   text?: string; // fallback
+  is_limited?: boolean;
 };
 
 const mapMaster = maps as MapEntry[];
 const questList = quests as Quest[];
+const yearlyResetMonthMap = yearlyResetMonths as Record<string, number>;
 
 function normalize(s: string): string {
   return (s ?? "").trim();
+}
+
+function normalizeSearchText(s: string): string {
+  return (s ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function containsWholeKeyword(text: string, word: string): boolean {
+  const escaped = escapeRegExp(word);
+  const pattern = new RegExp(
+    `(^|[^ぁ-んァ-ヶー一-龠a-zA-Z0-9])${escaped}([^ぁ-んァ-ヶー一-龠a-zA-Z0-9]|$)`
+  );
+  return pattern.test(text);
+}
+
+function detectMapIdsFromText(text: string): string[] {
+  const normalized = normalizeSearchText(text);
+  const hits: string[] = [];
+
+  for (const m of mapMaster) {
+    const words = [...(m.keywords ?? []), ...(m.aliases ?? [])].filter(Boolean);
+
+    for (const w of words) {
+      if (containsWholeKeyword(normalized, w)) {
+        hits.push(m.map_id);
+        break;
+      }
+    }
+  }
+
+  return Array.from(new Set(hits));
 }
 
 function mapLabel(m: MapEntry) {
@@ -37,8 +77,15 @@ function questText(q: Quest): string {
   return q.text_plain ?? q.text ?? q.raw ?? "";
 }
 
+function questResetMonth(q: Quest): number | undefined {
+  if ((q.cycle ?? "unknown") !== "yearly") return undefined;
+  return yearlyResetMonthMap[q.id ?? ""];
+}
+
 function questMaps(q: Quest): string[] {
-  return Array.isArray(q.maps) ? q.maps : [];
+  const text = questText(q);
+  if (!text) return [];
+  return detectMapIdsFromText(text);
 }
 
 function cycleLabel(c: Cycle): string {
@@ -46,7 +93,7 @@ function cycleLabel(c: Cycle): string {
     case "daily": return "日次";
     case "weekly": return "週次";
     case "monthly": return "月次";
-    case "quarterly": return "三月次"
+    case "quarterly": return "四半期";
     case "yearly": return "年次";
     case "normal": return "単発";
     default: return "不明";
@@ -142,15 +189,17 @@ function applyMapFilter() {
 }
 
 function renderSelect() {
+  const cur = select.value;
+
   const options =
     [`<option value="">(全海域)</option>`] +
     filteredMaps.map((m) => `<option value="${m.map_id}">${mapLabel(m)}</option>`).join("");
 
   select.innerHTML = options;
 
-  // Keep selection if possible; otherwise reset to All
-  const cur = select.value;
-  if (cur && !filteredMaps.some((m) => m.map_id === cur)) {
+  if (cur && filteredMaps.some((m) => m.map_id === cur)) {
+    select.value = cur;
+  } else {
     select.value = "";
   }
 
@@ -163,7 +212,7 @@ const cycleItems: { key: Cycle; label: string }[] = [
   { key: "daily", label: "日次" },
   { key: "weekly", label: "週次" },
   { key: "monthly", label: "月次" },
-  { key: "quarterly", label: "三月次" },
+  { key: "quarterly", label: "四半期" },
   { key: "yearly", label: "年次" },
   { key: "unknown", label: "不明" },
 ];
@@ -215,10 +264,8 @@ function selectedCycles(): Set<Cycle> | null {
   const checks = Array.from(document.querySelectorAll<HTMLInputElement>("input.cycle"));
   const selected = checks.filter((x) => x.checked).map((x) => x.value as Cycle);
 
-  // 全部チェックならフィルタなし（null）
   if (selected.length === checks.length) return null;
 
-  // 0件チェックは「0件表示」にする（空Set）
   return new Set(selected);
 }
 
@@ -232,7 +279,7 @@ function compareIdDesc(a: Quest, b: Quest): number {
 
 // ---- Render results ----
 function renderResult() {
-  const mapId = select.value; // "" means all maps
+  const mapId = select.value;
   const qf = normalize(questFilter.value).toLowerCase();
   const cycSet = selectedCycles();
 
@@ -244,12 +291,10 @@ function renderResult() {
     qs = (mapToQuests[mapId] ?? []).slice();
   }
 
-  // Cycle OR filter
   if (cycSet !== null) {
     qs = qs.filter((q) => cycSet.has((q.cycle ?? "unknown") as Cycle));
   }
 
-  // Quest text filter
   if (qf) {
     qs = qs.filter((q) => {
       const hay = `${q.id} ${q.title} ${questText(q)}`.toLowerCase();
@@ -257,18 +302,15 @@ function renderResult() {
     });
   }
 
-  // Sort
   const sortMode = sortSelect.value;
   if (sortMode === "id_asc") {
     qs.sort(compareIdAsc);
   } else if (sortMode === "id_desc") {
     qs.sort(compareIdDesc);
   } else {
-    // 同時進行しやすい順：必要海域数が少ないものを上へ
     qs.sort((a, b) => questMaps(a).length - questMaps(b).length);
   }
 
-  // Meta
   if (!mapId) {
     meta.textContent = `(全海域) / ヒット任務: ${qs.length}`;
   } else {
@@ -278,9 +320,14 @@ function renderResult() {
       : `map_id=${mapId} / ヒット任務: ${qs.length}`;
   }
 
-  // List
   list.innerHTML = qs.map((q, index) => {
     const cycleTag = `<span class="tag cycle">${cycleLabel((q.cycle ?? "unknown") as Cycle)}</span>`;
+
+    const resetMonth = questResetMonth(q);
+    const resetMonthTag = resetMonth
+      ? `<span class="tag reset">${resetMonth}月</span>`
+      : "";
+
     const mapTags = questMaps(q).map(id => `<span class="tag map">${id}</span>`).join("");
 
     return `
@@ -288,6 +335,7 @@ function renderResult() {
         <div class="title toggle" data-index="${index}">
           <span class="head">${escapeHtml(q.id)}｜${escapeHtml(q.title)}</span>
           ${cycleTag}
+          ${resetMonthTag}
           ${mapTags}
         </div>
         <div class="text hidden" id="detail-${index}">
@@ -308,13 +356,11 @@ function renderResult() {
   });
 }
 
-// Events
 mapFilter.addEventListener("input", applyMapFilter);
 select.addEventListener("change", renderResult);
 questFilter.addEventListener("input", renderResult);
 sortSelect.addEventListener("change", renderResult);
 
-// Initial render
 renderCycleChecks();
 renderSelect();
 renderResult();
