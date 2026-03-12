@@ -109,6 +109,11 @@ function escapeHtml(s: string) {
     .replaceAll("'", "&#039;");
 }
 
+function googleSearchUrl(q: Quest): string {
+  const query = q.title ?? "";
+  return `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+}
+
 // Reverse index: map_id -> quests[]
 function buildMapToQuests() {
   const mapTo: Record<string, Quest[]> = {};
@@ -330,6 +335,8 @@ function renderResult() {
 
     const mapTags = questMaps(q).map(id => `<span class="tag map">${id}</span>`).join("");
 
+    const googleUrl = googleSearchUrl(q);
+
     return `
       <li class="item">
         <div class="title toggle" data-index="${index}">
@@ -339,7 +346,17 @@ function renderResult() {
           ${mapTags}
         </div>
         <div class="text hidden" id="detail-${index}">
-          ${escapeHtml(questText(q))}
+          <div class="quest-body">${escapeHtml(questText(q))}</div>
+          <div class="detail-actions">
+            <a
+              class="search-btn"
+              href="${googleUrl}"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Googleで検索
+            </a>
+          </div>
         </div>
       </li>
     `;
